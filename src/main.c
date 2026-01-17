@@ -542,15 +542,15 @@ check_dependencies(AppState *app)
 {
 	if (!app->ytdlp_available && !app->mpv_available) {
 		show_error(app->window,
-			"Neither yt-dlp nor mpv is installed.\n\n"
-			"Please install at least one:\n"
+			"neither yt-dlp nor mpv is installed.\n\n"
+			"please install at least one:\n"
 			"  sudo pacman -S yt-dlp mpv  (Arch)\n"
 			"  sudo apt install yt-dlp mpv  (Debian/Ubuntu)\n"
 			"  brew install yt-dlp mpv  (macOS)");
 	} else if (!app->ytdlp_available) {
 		show_info(app->window,
-			"yt-dlp is not installed. Only 'Play in mpv' is available.\n\n"
-			"To enable downloading, install yt-dlp.");
+			"yt-dlp is not installed, only 'mpv (stream)' is available.\n\n"
+			"to enable downloading, install yt-dlp.");
 	}
 }
 
