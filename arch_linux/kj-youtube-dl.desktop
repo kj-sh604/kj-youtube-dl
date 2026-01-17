@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=kj-youtube-dl
+Comment=yup, yet another youtube-dl/yt-dlp GUI wrapper
+Exec=kj-youtube-dl
+Terminal=false
+Type=Application
+Categories=AudioVideo;Network;
+Keywords=YouTube;download;yt-dlp;video;audio;
