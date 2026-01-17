@@ -1,6 +1,3 @@
-# kj-youtube-dl build configuration
-# See LICENSE file for copyright and license details.
-
 # installation paths
 PREFIX = /usr/local
 
@@ -13,5 +10,5 @@ LDFLAGS =
 INCS = `pkg-config --cflags gtk+-3.0`
 LIBS = `pkg-config --libs gtk+-3.0`
 
-# debug build (uncomment for debugging)
+# debug build
 #CFLAGS = -std=c99 -pedantic -Wall -Wextra -g -O0 -DDEBUG

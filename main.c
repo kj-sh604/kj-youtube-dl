@@ -22,6 +22,7 @@ enum {
 	FMT_COUNT
 };
 
+// yt-dlp format strings for each output type
 static const char *format_args[] = {
 	[FMT_BEST] = "-cif 'bestvideo+bestaudio/best'",
 	[FMT_MP4]  = "-cif 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'",
@@ -30,14 +31,16 @@ static const char *format_args[] = {
 	[FMT_MPV]  = NULL
 };
 
+// human-readable format names for UI
 static const char *format_names[] = {
-	[FMT_BEST] = "Best Quality",
-	[FMT_MP4]  = "MP4 (Video)",
-	[FMT_WEBM] = "WebM (Video)",
-	[FMT_M4A]  = "M4A (Audio)",
-	[FMT_MPV]  = "Play in mpv"
+	[FMT_MP4]  = "mp4",
+	[FMT_WEBM] = "webm",
+	[FMT_M4A]  = "m4a",
+	[FMT_BEST] = "best (auto)",
+	[FMT_MPV]  = "mpv (stream)"
 };
 
+// application state and UI widget references
 typedef struct {
 	GtkWidget *window;
 	GtkWidget *url_entry;
@@ -47,11 +50,12 @@ typedef struct {
 	GtkWidget *download_button;
 	GtkWidget *status_label;
 	GtkWidget *progress_bar;
-	char      *download_dir;
-	int        ytdlp_available;
-	int        mpv_available;
+	char      *download_dir;     // user's selected download directory
+	int        ytdlp_available;   // yt-dlp availability flag
+	int        mpv_available;     // mpv availability flag
 } AppState;
 
+// check if a binary exists in PATH
 static int
 binary_exists(const char *name)
 {
@@ -202,6 +206,7 @@ on_dir_button_clicked(GtkWidget *button, gpointer data)
 	gtk_widget_destroy(dialog);
 }
 
+// validate URL against supported video platforms
 static int
 validate_url(const char *url)
 {
@@ -228,10 +233,10 @@ on_child_watch(GPid pid, gint status, gpointer data)
 	g_spawn_close_pid(pid);
 
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-		set_status(app, "Download completed successfully!");
+		set_status(app, "download completed successfully!");
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 1.0);
 	} else {
-		set_status(app, "Download failed. Check URL and try again.");
+		set_status(app, "download failed. check url and try again.");
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
 	}
 
@@ -253,6 +258,7 @@ pulse_progress(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+// handle download button click - spawn yt-dlp or mpv process
 static void
 on_download_clicked(GtkWidget *button, gpointer data)
 {
@@ -269,13 +275,13 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	url = gtk_entry_get_text(GTK_ENTRY(app->url_entry));
 
 	if (!validate_url(url)) {
-		show_error(app->window, "Please enter a valid video URL.");
+		show_error(app->window, "please enter a valid video url.");
 		return;
 	}
 
 	format_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->format_combo));
 	if (format_idx < 0 || format_idx >= FMT_COUNT) {
-		show_error(app->window, "Please select a format.");
+		show_error(app->window, "please select a format.");
 		return;
 	}
 
@@ -284,7 +290,7 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	save_download_dir(app->download_dir);
 
 	if (mkdir(app->download_dir, 0755) != 0 && errno != EEXIST) {
-		show_error(app->window, "Failed to create download directory.");
+		show_error(app->window, "failed to create download directory.");
 		return;
 	}
 
@@ -305,7 +311,7 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	gtk_widget_set_sensitive(app->url_entry, FALSE);
 	gtk_widget_set_sensitive(app->format_combo, FALSE);
 
-	set_status(app, format_idx == FMT_MPV ? "Opening in mpv..." : "Downloading...");
+	set_status(app, format_idx == FMT_MPV ? "streaming in mpv..." : "downloading...");
 
 	g_timeout_add(100, pulse_progress, app);
 
@@ -319,7 +325,7 @@ on_download_clicked(GtkWidget *button, gpointer data)
 		gtk_widget_set_sensitive(app->download_button, TRUE);
 		gtk_widget_set_sensitive(app->url_entry, TRUE);
 		gtk_widget_set_sensitive(app->format_combo, TRUE);
-		set_status(app, "Ready");
+		set_status(app, "ready");
 	} else {
 		g_child_watch_add(pid, on_child_watch, app);
 	}
@@ -379,6 +385,7 @@ on_format_changed(GtkWidget *combo, gpointer data)
 	}
 }
 
+// create app icon: red circle with white play triangle
 static GdkPixbuf *
 create_icon_pixbuf(int size)
 {
@@ -459,7 +466,7 @@ create_ui(AppState *app)
 	gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 0);
 
 	// URL input
-	label = gtk_label_new("Video URL:");
+	label = gtk_label_new("url:");
 	gtk_widget_set_halign(label, GTK_ALIGN_END);
 	gtk_grid_attach(GTK_GRID(grid), label, 0, 0, 1, 1);
 
@@ -471,7 +478,7 @@ create_ui(AppState *app)
 	g_signal_connect(app->url_entry, "activate", G_CALLBACK(on_url_activate), app);
 
 	// format selection
-	label = gtk_label_new("Format:");
+	label = gtk_label_new("pipe-to:");
 	gtk_widget_set_halign(label, GTK_ALIGN_END);
 	gtk_grid_attach(GTK_GRID(grid), label, 0, 1, 1, 1);
 
@@ -481,7 +488,7 @@ create_ui(AppState *app)
 	g_signal_connect(app->format_combo, "changed", G_CALLBACK(on_format_changed), app);
 
 	// download directory
-	label = gtk_label_new("Save to:");
+	label = gtk_label_new("save-to:");
 	gtk_widget_set_halign(label, GTK_ALIGN_END);
 	gtk_grid_attach(GTK_GRID(grid), label, 0, 2, 1, 1);
 
@@ -490,7 +497,7 @@ create_ui(AppState *app)
 	gtk_widget_set_hexpand(app->dir_entry, TRUE);
 	gtk_grid_attach(GTK_GRID(grid), app->dir_entry, 1, 2, 1, 1);
 
-	app->dir_button = gtk_button_new_with_label("Browse...");
+	app->dir_button = gtk_button_new_with_label("browse...");
 	gtk_grid_attach(GTK_GRID(grid), app->dir_button, 2, 2, 1, 1);
 	g_signal_connect(app->dir_button, "clicked", G_CALLBACK(on_dir_button_clicked), app);
 
@@ -503,11 +510,11 @@ create_ui(AppState *app)
 	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
 	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
 
-	app->status_label = gtk_label_new("Ready");
+	app->status_label = gtk_label_new("ready");
 	gtk_widget_set_halign(app->status_label, GTK_ALIGN_START);
 	gtk_box_pack_start(GTK_BOX(hbox), app->status_label, TRUE, TRUE, 0);
 
-	app->download_button = gtk_button_new_with_label("Download");
+	app->download_button = gtk_button_new_with_label("download");
 	gtk_widget_set_size_request(app->download_button, 120, -1);
 	gtk_box_pack_end(GTK_BOX(hbox), app->download_button, FALSE, FALSE, 0);
 	g_signal_connect(app->download_button, "clicked", G_CALLBACK(on_download_clicked), app);
