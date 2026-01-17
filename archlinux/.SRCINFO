@@ -1,6 +1,6 @@
 pkgbase = kj-youtube-dl-git
 	pkgdesc = yup, yet another youtube-dl/yt-dlp GUI wrapper
-	pkgver = r10.58a63f0
+	pkgver = r11.201f27f
 	pkgrel = 1
 	url = https://github.com/kj-sh604/kj-youtube-dl
 	arch = x86_64
