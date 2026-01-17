@@ -1,5 +1,5 @@
 pkgname=kj-youtube-dl-git
-pkgver=0
+pkgver=r7.854c8c8
 pkgrel=1
 pkgdesc="yup, yet another youtube-dl/yt-dlp GUI wrapper"
 arch=('x86_64')
