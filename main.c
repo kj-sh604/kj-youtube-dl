@@ -188,10 +188,10 @@ on_dir_button_clicked(GtkWidget *button, gpointer data)
 
 	(void)button;
 
-	dialog = gtk_file_chooser_dialog_new("Select Download Directory",
+	dialog = gtk_file_chooser_dialog_new("choose download directory",
 		GTK_WINDOW(app->window), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-		"_Cancel", GTK_RESPONSE_CANCEL,
-		"_Select", GTK_RESPONSE_ACCEPT, NULL);
+		"_cancel", GTK_RESPONSE_CANCEL,
+		"_download _here", GTK_RESPONSE_ACCEPT, NULL);
 
 	gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(dialog), app->download_dir);
 
@@ -236,7 +236,7 @@ on_child_watch(GPid pid, gint status, gpointer data)
 		set_status(app, "download completed successfully!");
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 1.0);
 	} else {
-		set_status(app, "download failed. check url and try again.");
+		set_status(app, "download failed, check URL and try again.");
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
 	}
 
@@ -381,7 +381,7 @@ on_format_changed(GtkWidget *combo, gpointer data)
 		set_status(app, "yt-dlp is not installed");
 	} else {
 		gtk_widget_set_sensitive(app->download_button, TRUE);
-		set_status(app, "Ready");
+		set_status(app, "ready");
 	}
 }
 
@@ -401,13 +401,13 @@ create_icon_pixbuf(int size)
 	cy = size / 2.0;
 	r = size / 2.0 - 1;
 
-	// red circle background
+	// #69baa7 circle background
 	cairo_arc(cr, cx, cy, r, 0, 2 * G_PI);
-	cairo_set_source_rgb(cr, 0.8, 0.0, 0.0);
+	cairo_set_source_rgb(cr, 0x69/255.0, 0xba/255.0, 0xa7/255.0);
 	cairo_fill(cr);
 
-	// white play triangle
-	cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+	// play triangle
+	cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
 	cairo_move_to(cr, cx - r * 0.3, cy - r * 0.5);
 	cairo_line_to(cr, cx + r * 0.5, cy);
 	cairo_line_to(cr, cx - r * 0.3, cy + r * 0.5);
