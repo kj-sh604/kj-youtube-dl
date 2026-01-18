@@ -1,4 +1,4 @@
-# kj-youtube-dl ⏯
+# kj-youtube-dl 📼
 
 ![Screenshot of kj-youtube-dl](pix/readme-scrot_20250117-1125.png)
 
