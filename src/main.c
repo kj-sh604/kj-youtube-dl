@@ -45,6 +45,7 @@ typedef struct {
 	GtkWidget *window;
 	GtkWidget *url_entry;
 	GtkWidget *format_combo;
+	GtkWidget *browser_combo;
 	GtkWidget *dir_entry;
 	GtkWidget *dir_button;
 	GtkWidget *download_button;
@@ -55,6 +56,13 @@ typedef struct {
 	int        mpv_available;     // mpv availability flag
 } AppState;
 
+static const char *
+get_home_dir(void)
+{
+	const char *home = getenv("HOME");
+	return home ? home : "/tmp";
+}
+
 // check if a binary exists in PATH
 static int
 binary_exists(const char *name)
@@ -64,11 +72,26 @@ binary_exists(const char *name)
 	return (system(cmd) == 0);
 }
 
-static const char *
-get_home_dir(void)
+// check if a browser profile directory exists
+static int
+browser_profile_exists(const char *path)
 {
-	const char *home = getenv("HOME");
-	return home ? home : "/tmp";
+	char expanded_path[1024];
+	const char *home;
+	struct stat st;
+
+	if (path == NULL)
+		return 0;
+
+	// expand ~ to home directory
+	if (path[0] == '~') {
+		home = get_home_dir();
+		snprintf(expanded_path, sizeof(expanded_path), "%s%s", home, path + 1);
+	} else {
+		snprintf(expanded_path, sizeof(expanded_path), "%s", path);
+	}
+
+	return (stat(expanded_path, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
 static char *
@@ -298,8 +321,29 @@ on_download_clicked(GtkWidget *button, gpointer data)
 		cmd = g_strdup_printf("cd '%s' && mpv --ytdl-format='bestvideo+bestaudio/best' '%s'",
 			app->download_dir, url);
 	} else {
-		cmd = g_strdup_printf("cd '%s' && yt-dlp %s '%s'",
-			app->download_dir, format_args[format_idx], url);
+		int browser_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo));
+		const char *browser = NULL;
+
+		if (browser_idx > 0) {
+			GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(app->browser_combo));
+			GtkTreeIter iter;
+			gchar *browser_text;
+
+			if (gtk_combo_box_get_active_iter(GTK_COMBO_BOX(app->browser_combo), &iter)) {
+				gtk_tree_model_get(model, &iter, 0, &browser_text, -1);
+				if (strcmp(browser_text, "none") != 0)
+					browser = browser_text;
+			}
+		}
+
+		if (browser != NULL) {
+			cmd = g_strdup_printf("cd '%s' && yt-dlp %s --cookies-from-browser '%s' '%s'",
+				app->download_dir, format_args[format_idx], browser, url);
+			g_free((gpointer)browser);
+		} else {
+			cmd = g_strdup_printf("cd '%s' && yt-dlp %s '%s'",
+				app->download_dir, format_args[format_idx], url);
+		}
 	}
 
 	argv[0] = "/bin/sh";
@@ -361,6 +405,37 @@ setup_format_combo(AppState *app)
 		gtk_combo_box_set_active(GTK_COMBO_BOX(app->format_combo), FMT_BEST);
 	else if (app->mpv_available)
 		gtk_combo_box_set_active(GTK_COMBO_BOX(app->format_combo), FMT_MPV);
+}
+
+static void
+setup_browser_combo(AppState *app)
+{
+	static const struct {
+		const char *name;
+		const char *path;
+	} browsers[] = {
+		{"chrome", "~/.config/google-chrome"},
+		{"chromium", "~/.config/chromium"},
+		{"firefox", "~/.mozilla/firefox"},
+		{"brave", "~/.config/BraveSoftware/Brave-Browser"},
+		{"edge", "~/.config/microsoft-edge"},
+		{"opera", "~/.config/opera"},
+		{"vivaldi", "~/.config/vivaldi"},
+		{NULL, NULL}
+	};
+
+	int i;
+
+	gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app->browser_combo), "none");
+
+	for (i = 0; browsers[i].name != NULL; i++) {
+		if (browser_profile_exists(browsers[i].path)) {
+			gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app->browser_combo),
+				browsers[i].name);
+		}
+	}
+
+	gtk_combo_box_set_active(GTK_COMBO_BOX(app->browser_combo), 0);
 }
 
 static void
@@ -487,18 +562,27 @@ create_ui(AppState *app)
 	gtk_grid_attach(GTK_GRID(grid), app->format_combo, 1, 1, 2, 1);
 	g_signal_connect(app->format_combo, "changed", G_CALLBACK(on_format_changed), app);
 
+	// cookies from browser
+	label = gtk_label_new("cookies:");
+	gtk_widget_set_halign(label, GTK_ALIGN_END);
+	gtk_grid_attach(GTK_GRID(grid), label, 0, 2, 1, 1);
+
+	app->browser_combo = gtk_combo_box_text_new();
+	gtk_widget_set_hexpand(app->browser_combo, TRUE);
+	gtk_grid_attach(GTK_GRID(grid), app->browser_combo, 1, 2, 2, 1);
+
 	// download directory
 	label = gtk_label_new("save-to:");
 	gtk_widget_set_halign(label, GTK_ALIGN_END);
-	gtk_grid_attach(GTK_GRID(grid), label, 0, 2, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), label, 0, 3, 1, 1);
 
 	app->dir_entry = gtk_entry_new();
 	gtk_entry_set_text(GTK_ENTRY(app->dir_entry), app->download_dir);
 	gtk_widget_set_hexpand(app->dir_entry, TRUE);
-	gtk_grid_attach(GTK_GRID(grid), app->dir_entry, 1, 2, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), app->dir_entry, 1, 3, 1, 1);
 
 	app->dir_button = gtk_button_new_with_label("browse...");
-	gtk_grid_attach(GTK_GRID(grid), app->dir_button, 2, 2, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), app->dir_button, 2, 3, 1, 1);
 	g_signal_connect(app->dir_button, "clicked", G_CALLBACK(on_dir_button_clicked), app);
 
 	// progress bar
@@ -520,6 +604,7 @@ create_ui(AppState *app)
 	g_signal_connect(app->download_button, "clicked", G_CALLBACK(on_download_clicked), app);
 
 	setup_format_combo(app);
+	setup_browser_combo(app);
 }
 
 static void
