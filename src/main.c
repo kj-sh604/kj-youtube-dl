@@ -448,6 +448,13 @@ on_format_changed(GtkWidget *combo, gpointer data)
 
 	format_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->format_combo));
 
+	// update button label based on format
+	if (format_idx == FMT_MPV) {
+		gtk_button_set_label(GTK_BUTTON(app->download_button), "stream");
+	} else {
+		gtk_button_set_label(GTK_BUTTON(app->download_button), "download");
+	}
+
 	if (format_idx == FMT_MPV && !app->mpv_available) {
 		gtk_widget_set_sensitive(app->download_button, FALSE);
 		set_status(app, "mpv is not installed");
