@@ -1,6 +1,6 @@
 # kj-youtube-dl 📼
 
-![Screenshot of kj-youtube-dl](pix/readme-scrot_20250117-1125.png)
+![Screenshot of kj-youtube-dl](https://kj-media.online/pics/readme-scrot-20250117-1125/readme-scrot_20250117-1125.png)
 
 yup, yet another `youtube-dl`/`yt-dlp` GUI wrapper.
 
