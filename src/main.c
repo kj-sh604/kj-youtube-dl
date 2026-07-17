@@ -1,6 +1,9 @@
 // kj-youtube-dl - GTK3 GUI wrapper for yt-dlp
 // See LICENSE file for copyright and license details.
 
+// expose posix prototypes (kill, setpgid, stat) under strict c99
+#define _POSIX_C_SOURCE 200809L
+
 #include <gtk/gtk.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +12,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <errno.h>
 #include <signal.h>
 
 #include "config.h"
@@ -25,10 +27,10 @@ enum {
 
 // yt-dlp format strings for each output type
 static const char *format_args[] = {
-	[FMT_BEST] = "-cif 'bestvideo+bestaudio/best'",
-	[FMT_MP4]  = "-cif 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'",
-	[FMT_WEBM] = "-cif 'bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best'",
-	[FMT_M4A]  = "-cif 'bestaudio[ext=m4a]'",
+	[FMT_BEST] = "bestvideo+bestaudio/best",
+	[FMT_MP4]  = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+	[FMT_WEBM] = "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best",
+	[FMT_M4A]  = "bestaudio[ext=m4a]",
 	[FMT_MPV]  = NULL
 };
 
@@ -56,6 +58,7 @@ typedef struct {
 	GtkWidget *no_playlist_check;  // --no-playlist toggle
 	char      *download_dir;        // user's selected download directory
 	GPid       child_pid;           // currently spawned process pid, 0 when idle
+	guint      pulse_timer;         // progress pulse timer id, 0 when inactive
 	int        ytdlp_available;     // yt-dlp availability flag
 	int        mpv_available;       // mpv availability flag
 } AppState;
@@ -63,17 +66,21 @@ typedef struct {
 static const char *
 get_home_dir(void)
 {
-	const char *home = getenv("HOME");
+	const char *home = g_get_home_dir();
 	return home ? home : "/tmp";
 }
 
-// check if a binary exists in PATH
+// check if a binary exists in PATH without spawning a shell
 static int
 binary_exists(const char *name)
 {
-	char cmd[256];
-	snprintf(cmd, sizeof(cmd), "command -v %s >/dev/null 2>&1", name);
-	return (system(cmd) == 0);
+	gchar *path = g_find_program_in_path(name);
+
+	if (path == NULL)
+		return 0;
+
+	g_free(path);
+	return 1;
 }
 
 // check if a browser profile directory exists
@@ -98,80 +105,84 @@ browser_profile_exists(const char *path)
 	return (stat(expanded_path, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
-static char *
+// caller must g_free the returned path
+static gchar *
 get_config_path(void)
 {
-	static char path[512];
-	const char *config_dir = getenv("XDG_CONFIG_HOME");
+	const char *config_dir = g_getenv("XDG_CONFIG_HOME");
 
-	if (config_dir != NULL)
-		snprintf(path, sizeof(path), "%s/kj-youtube-dl", config_dir);
-	else
-		snprintf(path, sizeof(path), "%s/.config/kj-youtube-dl", get_home_dir());
+	if (config_dir != NULL && config_dir[0] != '\0')
+		return g_build_filename(config_dir, "kj-youtube-dl", NULL);
 
-	return path;
+	return g_build_filename(get_home_dir(), ".config", "kj-youtube-dl", NULL);
 }
 
 static void
 ensure_config_dir(void)
 {
-	mkdir(get_config_path(), 0755);
+	gchar *dir = get_config_path();
+	g_mkdir_with_parents(dir, 0755);
+	g_free(dir);
 }
 
 static void
 save_download_dir(const char *dir)
 {
-	char path[1024];
+	gchar *config_dir;
+	gchar *path;
 	FILE *fp;
 
 	ensure_config_dir();
-	snprintf(path, sizeof(path), "%s/download_dir", get_config_path());
+
+	config_dir = get_config_path();
+	path = g_build_filename(config_dir, "download_dir", NULL);
+	g_free(config_dir);
 
 	fp = fopen(path, "w");
 	if (fp != NULL) {
 		fprintf(fp, "%s\n", dir);
 		fclose(fp);
 	}
+
+	g_free(path);
 }
 
 static char *
 load_download_dir(void)
 {
-	char path[1024];
-	char buf[1024];
-	FILE *fp;
-	size_t len;
+	gchar *config_dir;
+	gchar *path;
+	gchar *contents = NULL;
 
-	snprintf(path, sizeof(path), "%s/download_dir", get_config_path());
+	config_dir = get_config_path();
+	path = g_build_filename(config_dir, "download_dir", NULL);
+	g_free(config_dir);
 
-	fp = fopen(path, "r");
-	if (fp == NULL)
+	if (!g_file_get_contents(path, &contents, NULL, NULL)) {
+		g_free(path);
 		return NULL;
-
-	if (fgets(buf, sizeof(buf), fp) != NULL) {
-		len = strlen(buf);
-		if (len > 0 && buf[len - 1] == '\n')
-			buf[len - 1] = '\0';
-		fclose(fp);
-		return g_strdup(buf);
 	}
 
-	fclose(fp);
-	return NULL;
+	g_free(path);
+	g_strchomp(contents);
+
+	if (contents[0] == '\0') {
+		g_free(contents);
+		return NULL;
+	}
+
+	return contents;
 }
 
 static char *
 get_default_download_dir(void)
 {
-	char *saved;
-	char path[1024];
+	char *saved = load_download_dir();
 
-	saved = load_download_dir();
 	if (saved != NULL)
 		return saved;
 
-	snprintf(path, sizeof(path), "%s/%s", get_home_dir(), DEFAULT_DOWNLOAD_DIR);
-	return g_strdup(path);
+	return g_build_filename(get_home_dir(), DEFAULT_DOWNLOAD_DIR, NULL);
 }
 
 static void
@@ -260,7 +271,8 @@ on_stop_clicked(GtkWidget *button, gpointer data)
 	(void)button;
 
 	if (app->child_pid > 0) {
-		kill(app->child_pid, SIGTERM);
+		// signal the whole process group, not just the leader
+		kill(-(app->child_pid), SIGTERM);
 		app->child_pid = 0;
 		gtk_widget_show(app->download_button);
 		gtk_widget_hide(app->stop_button);
@@ -276,13 +288,12 @@ on_child_watch(GPid pid, gint status, gpointer data)
 {
 	AppState *app = (AppState *)data;
 
-	if (app->child_pid == 0) {
-		// stop was already pressed, just clean up
-		g_spawn_close_pid(pid);
-		return;
-	}
-
 	g_spawn_close_pid(pid);
+
+	// ignore exits from canceled or superseded children
+	if (pid != app->child_pid)
+		return;
+
 	app->child_pid = 0;
 
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
@@ -304,25 +315,37 @@ pulse_progress(gpointer data)
 {
 	AppState *app = (AppState *)data;
 
-	if (gtk_widget_is_visible(app->stop_button)) {
-		gtk_progress_bar_pulse(GTK_PROGRESS_BAR(app->progress_bar));
-		return G_SOURCE_CONTINUE;
+	if (app->child_pid == 0 || !gtk_widget_is_visible(app->stop_button)) {
+		app->pulse_timer = 0;
+		return G_SOURCE_REMOVE;
 	}
 
-	return G_SOURCE_REMOVE;
+	gtk_progress_bar_pulse(GTK_PROGRESS_BAR(app->progress_bar));
+	return G_SOURCE_CONTINUE;
 }
 
-// handle download button click - spawn yt-dlp or mpv process
+// run each download in its own process group so stop can kill the
+// whole pipeline, including any ffmpeg helper processes
+static void
+child_setup(gpointer data)
+{
+	(void)data;
+
+	setpgid(0, 0);
+}
+
+// spawn yt-dlp or mpv when the download button is clicked
 static void
 on_download_clicked(GtkWidget *button, gpointer data)
 {
 	AppState *app = (AppState *)data;
 	const char *url;
-	int format_idx;
-	char *cmd;
+	gchar *browser = NULL;
 	GPid pid;
 	GError *error = NULL;
-	gchar *argv[4];
+	gchar *argv[12];
+	int format_idx;
+	int i = 0;
 
 	(void)button;
 
@@ -343,60 +366,46 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	app->download_dir = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->dir_entry)));
 	save_download_dir(app->download_dir);
 
-	if (mkdir(app->download_dir, 0755) != 0 && errno != EEXIST) {
+	if (g_mkdir_with_parents(app->download_dir, 0755) != 0) {
 		show_error(app->window, "failed to create download directory.");
 		return;
 	}
 
 	if (format_idx == FMT_MPV) {
-		cmd = g_strdup_printf("cd '%s' && mpv --ytdl-format='bestvideo+bestaudio/best' '%s'",
-			app->download_dir, url);
+		argv[i++] = "mpv";
+		argv[i++] = "--ytdl-format=bestvideo+bestaudio/best";
+		argv[i++] = (gchar *)url;
 	} else {
 		int browser_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo));
-		const char *browser = NULL;
-		int no_playlist;
-
-		no_playlist = gtk_toggle_button_get_active(
+		int no_playlist = gtk_toggle_button_get_active(
 			GTK_TOGGLE_BUTTON(app->no_playlist_check));
 
-		if (browser_idx > 0) {
-			GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(app->browser_combo));
-			GtkTreeIter iter;
-			gchar *browser_text;
+		argv[i++] = "yt-dlp";
+		argv[i++] = "-c";
+		argv[i++] = "-i";
+		argv[i++] = "-f";
+		argv[i++] = (gchar *)format_args[format_idx];
 
-			if (gtk_combo_box_get_active_iter(GTK_COMBO_BOX(app->browser_combo), &iter)) {
-				gtk_tree_model_get(model, &iter, 0, &browser_text, -1);
-				if (strcmp(browser_text, "none") != 0)
-					browser = browser_text;
-			}
+		if (no_playlist)
+			argv[i++] = "--no-playlist";
+
+		if (browser_idx > 0) {
+			GtkTreeModel *model = gtk_combo_box_get_model(
+				GTK_COMBO_BOX(app->browser_combo));
+			GtkTreeIter iter;
+
+			if (gtk_combo_box_get_active_iter(GTK_COMBO_BOX(app->browser_combo), &iter))
+				gtk_tree_model_get(model, &iter, 0, &browser, -1);
 		}
 
 		if (browser != NULL) {
-			if (no_playlist) {
-				cmd = g_strdup_printf(
-					"cd '%s' && yt-dlp %s --no-playlist --cookies-from-browser '%s' '%s'",
-					app->download_dir, format_args[format_idx], browser, url);
-			} else {
-				cmd = g_strdup_printf(
-					"cd '%s' && yt-dlp %s --cookies-from-browser '%s' '%s'",
-					app->download_dir, format_args[format_idx], browser, url);
-			}
-			g_free((gpointer)browser);
-		} else {
-			if (no_playlist) {
-				cmd = g_strdup_printf("cd '%s' && yt-dlp %s --no-playlist '%s'",
-					app->download_dir, format_args[format_idx], url);
-			} else {
-				cmd = g_strdup_printf("cd '%s' && yt-dlp %s '%s'",
-					app->download_dir, format_args[format_idx], url);
-			}
+			argv[i++] = "--cookies-from-browser";
+			argv[i++] = browser;
 		}
-	}
 
-	argv[0] = "/bin/sh";
-	argv[1] = "-c";
-	argv[2] = cmd;
-	argv[3] = NULL;
+		argv[i++] = (gchar *)url;
+	}
+	argv[i] = NULL;
 
 	gtk_widget_hide(app->download_button);
 	gtk_widget_show(app->stop_button);
@@ -405,11 +414,10 @@ on_download_clicked(GtkWidget *button, gpointer data)
 
 	set_status(app, format_idx == FMT_MPV ? "streaming in mpv..." : "downloading...");
 
-	g_timeout_add(100, pulse_progress, app);
-
-	if (!g_spawn_async(NULL, argv, NULL,
+	// pass arguments directly, no shell means no injection risk
+	if (!g_spawn_async(app->download_dir, argv, NULL,
 		G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-		NULL, NULL, &pid, &error)) {
+		child_setup, NULL, &pid, &error)) {
 
 		show_error(app->window, error->message);
 		g_error_free(error);
@@ -422,9 +430,12 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	} else {
 		app->child_pid = pid;
 		g_child_watch_add(pid, on_child_watch, app);
+
+		if (app->pulse_timer == 0)
+			app->pulse_timer = g_timeout_add(100, pulse_progress, app);
 	}
 
-	g_free(cmd);
+	g_free(browser);
 }
 
 static void
@@ -574,6 +585,20 @@ set_window_icon(GtkWidget *window)
 	g_list_free_full(icons, g_object_unref);
 }
 
+// kill any running child process before quitting
+static void
+on_window_destroy(GtkWidget *widget, gpointer data)
+{
+	AppState *app = (AppState *)data;
+
+	(void)widget;
+
+	if (app->child_pid > 0)
+		kill(-(app->child_pid), SIGTERM);
+
+	gtk_main_quit();
+}
+
 static void
 create_ui(AppState *app)
 {
@@ -587,7 +612,7 @@ create_ui(AppState *app)
 
 	set_window_icon(app->window);
 
-	g_signal_connect(app->window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+	g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), app);
 
 	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
 	gtk_container_add(GTK_CONTAINER(app->window), vbox);
