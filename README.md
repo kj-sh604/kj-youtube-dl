@@ -28,14 +28,14 @@ then just:
 make
 ```
 
-the binary will end up in `bin/kj-youtube-dl`
+the binary will end up in `./kj-youtube-dl`
 
 ## using it
 
 just run the binary:
 
 ```sh
-./bin/kj-youtube-dl
+./kj-youtube-dl
 ```
 
 paste a url, pick a format, click download. 
