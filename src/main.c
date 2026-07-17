@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <signal.h>
 
 #include "config.h"
 
@@ -49,11 +50,14 @@ typedef struct {
 	GtkWidget *dir_entry;
 	GtkWidget *dir_button;
 	GtkWidget *download_button;
+	GtkWidget *stop_button;       // cancel running download/stream
 	GtkWidget *status_label;
 	GtkWidget *progress_bar;
-	char      *download_dir;     // user's selected download directory
-	int        ytdlp_available;   // yt-dlp availability flag
-	int        mpv_available;     // mpv availability flag
+	GtkWidget *no_playlist_check;  // --no-playlist toggle
+	char      *download_dir;        // user's selected download directory
+	GPid       child_pid;           // currently spawned process pid, 0 when idle
+	int        ytdlp_available;     // yt-dlp availability flag
+	int        mpv_available;       // mpv availability flag
 } AppState;
 
 static const char *
@@ -249,11 +253,37 @@ validate_url(const char *url)
 }
 
 static void
+on_stop_clicked(GtkWidget *button, gpointer data)
+{
+	AppState *app = (AppState *)data;
+
+	(void)button;
+
+	if (app->child_pid > 0) {
+		kill(app->child_pid, SIGTERM);
+		app->child_pid = 0;
+		gtk_widget_show(app->download_button);
+		gtk_widget_hide(app->stop_button);
+		gtk_widget_set_sensitive(app->url_entry, TRUE);
+		gtk_widget_set_sensitive(app->format_combo, TRUE);
+		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
+		set_status(app, "canceled.");
+	}
+}
+
+static void
 on_child_watch(GPid pid, gint status, gpointer data)
 {
 	AppState *app = (AppState *)data;
 
+	if (app->child_pid == 0) {
+		// stop was already pressed, just clean up
+		g_spawn_close_pid(pid);
+		return;
+	}
+
 	g_spawn_close_pid(pid);
+	app->child_pid = 0;
 
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		set_status(app, "download completed successfully!");
@@ -263,7 +293,8 @@ on_child_watch(GPid pid, gint status, gpointer data)
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
 	}
 
-	gtk_widget_set_sensitive(app->download_button, TRUE);
+	gtk_widget_show(app->download_button);
+	gtk_widget_hide(app->stop_button);
 	gtk_widget_set_sensitive(app->url_entry, TRUE);
 	gtk_widget_set_sensitive(app->format_combo, TRUE);
 }
@@ -273,7 +304,7 @@ pulse_progress(gpointer data)
 {
 	AppState *app = (AppState *)data;
 
-	if (!gtk_widget_get_sensitive(app->download_button)) {
+	if (gtk_widget_is_visible(app->stop_button)) {
 		gtk_progress_bar_pulse(GTK_PROGRESS_BAR(app->progress_bar));
 		return G_SOURCE_CONTINUE;
 	}
@@ -323,6 +354,10 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	} else {
 		int browser_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo));
 		const char *browser = NULL;
+		int no_playlist;
+
+		no_playlist = gtk_toggle_button_get_active(
+			GTK_TOGGLE_BUTTON(app->no_playlist_check));
 
 		if (browser_idx > 0) {
 			GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(app->browser_combo));
@@ -337,12 +372,24 @@ on_download_clicked(GtkWidget *button, gpointer data)
 		}
 
 		if (browser != NULL) {
-			cmd = g_strdup_printf("cd '%s' && yt-dlp %s --cookies-from-browser '%s' '%s'",
-				app->download_dir, format_args[format_idx], browser, url);
+			if (no_playlist) {
+				cmd = g_strdup_printf(
+					"cd '%s' && yt-dlp %s --no-playlist --cookies-from-browser '%s' '%s'",
+					app->download_dir, format_args[format_idx], browser, url);
+			} else {
+				cmd = g_strdup_printf(
+					"cd '%s' && yt-dlp %s --cookies-from-browser '%s' '%s'",
+					app->download_dir, format_args[format_idx], browser, url);
+			}
 			g_free((gpointer)browser);
 		} else {
-			cmd = g_strdup_printf("cd '%s' && yt-dlp %s '%s'",
-				app->download_dir, format_args[format_idx], url);
+			if (no_playlist) {
+				cmd = g_strdup_printf("cd '%s' && yt-dlp %s --no-playlist '%s'",
+					app->download_dir, format_args[format_idx], url);
+			} else {
+				cmd = g_strdup_printf("cd '%s' && yt-dlp %s '%s'",
+					app->download_dir, format_args[format_idx], url);
+			}
 		}
 	}
 
@@ -351,7 +398,8 @@ on_download_clicked(GtkWidget *button, gpointer data)
 	argv[2] = cmd;
 	argv[3] = NULL;
 
-	gtk_widget_set_sensitive(app->download_button, FALSE);
+	gtk_widget_hide(app->download_button);
+	gtk_widget_show(app->stop_button);
 	gtk_widget_set_sensitive(app->url_entry, FALSE);
 	gtk_widget_set_sensitive(app->format_combo, FALSE);
 
@@ -366,11 +414,13 @@ on_download_clicked(GtkWidget *button, gpointer data)
 		show_error(app->window, error->message);
 		g_error_free(error);
 
-		gtk_widget_set_sensitive(app->download_button, TRUE);
+		gtk_widget_show(app->download_button);
+		gtk_widget_hide(app->stop_button);
 		gtk_widget_set_sensitive(app->url_entry, TRUE);
 		gtk_widget_set_sensitive(app->format_combo, TRUE);
 		set_status(app, "ready");
 	} else {
+		app->child_pid = pid;
 		g_child_watch_add(pid, on_child_watch, app);
 	}
 
@@ -578,18 +628,23 @@ create_ui(AppState *app)
 	gtk_widget_set_hexpand(app->browser_combo, TRUE);
 	gtk_grid_attach(GTK_GRID(grid), app->browser_combo, 1, 2, 2, 1);
 
+	// no playlist checkbox
+	app->no_playlist_check = gtk_check_button_new_with_label("--no-playlist");
+	gtk_widget_set_halign(app->no_playlist_check, GTK_ALIGN_START);
+	gtk_grid_attach(GTK_GRID(grid), app->no_playlist_check, 1, 3, 2, 1);
+
 	// download directory
 	label = gtk_label_new("save-to:");
 	gtk_widget_set_halign(label, GTK_ALIGN_END);
-	gtk_grid_attach(GTK_GRID(grid), label, 0, 3, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), label, 0, 4, 1, 1);
 
 	app->dir_entry = gtk_entry_new();
 	gtk_entry_set_text(GTK_ENTRY(app->dir_entry), app->download_dir);
 	gtk_widget_set_hexpand(app->dir_entry, TRUE);
-	gtk_grid_attach(GTK_GRID(grid), app->dir_entry, 1, 3, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), app->dir_entry, 1, 4, 1, 1);
 
 	app->dir_button = gtk_button_new_with_label("browse...");
-	gtk_grid_attach(GTK_GRID(grid), app->dir_button, 2, 3, 1, 1);
+	gtk_grid_attach(GTK_GRID(grid), app->dir_button, 2, 4, 1, 1);
 	g_signal_connect(app->dir_button, "clicked", G_CALLBACK(on_dir_button_clicked), app);
 
 	// progress bar
@@ -610,6 +665,12 @@ create_ui(AppState *app)
 	gtk_box_pack_end(GTK_BOX(hbox), app->download_button, FALSE, FALSE, 0);
 	g_signal_connect(app->download_button, "clicked", G_CALLBACK(on_download_clicked), app);
 
+	app->stop_button = gtk_button_new_with_label("stop");
+	gtk_widget_set_size_request(app->stop_button, 120, -1);
+	gtk_box_pack_end(GTK_BOX(hbox), app->stop_button, FALSE, FALSE, 0);
+	g_signal_connect(app->stop_button, "clicked", G_CALLBACK(on_stop_clicked), app);
+	gtk_widget_set_no_show_all(app->stop_button, TRUE);
+
 	setup_format_combo(app);
 	setup_browser_combo(app);
 }
@@ -618,6 +679,7 @@ static void
 init_app(AppState *app)
 {
 	memset(app, 0, sizeof(*app));
+	app->child_pid = 0;
 	app->ytdlp_available = binary_exists("yt-dlp");
 	app->mpv_available = binary_exists("mpv");
 	app->download_dir = get_default_download_dir();
