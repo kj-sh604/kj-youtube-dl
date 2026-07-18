@@ -58,6 +58,7 @@ typedef struct {
 	GtkWidget *no_playlist_check;  // --no-playlist toggle
 	char      *download_dir;        // user's selected download directory
 	GPid       child_pid;           // currently spawned process pid, 0 when idle
+	int        is_streaming;        // current child is an mpv stream
 	guint      pulse_timer;         // progress pulse timer id, 0 when inactive
 	int        ytdlp_available;     // yt-dlp availability flag
 	int        mpv_available;       // mpv availability flag
@@ -235,32 +236,29 @@ on_dir_button_clicked(GtkWidget *button, gpointer data)
 
 	res = gtk_dialog_run(GTK_DIALOG(dialog));
 	if (res == GTK_RESPONSE_ACCEPT) {
-		g_free(app->download_dir);
-		app->download_dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-		gtk_entry_set_text(GTK_ENTRY(app->dir_entry), app->download_dir);
-		save_download_dir(app->download_dir);
+		gchar *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+
+		if (filename != NULL) {
+			g_free(app->download_dir);
+			app->download_dir = filename;
+			gtk_entry_set_text(GTK_ENTRY(app->dir_entry), app->download_dir);
+			save_download_dir(app->download_dir);
+		}
 	}
 
 	gtk_widget_destroy(dialog);
 }
 
-// validate URL against supported video platforms
+// require an http(s) scheme so a pasted url can never be
+// interpreted as a command line option by yt-dlp or mpv
 static int
 validate_url(const char *url)
 {
-	if (url == NULL || strlen(url) == 0)
+	if (url == NULL)
 		return 0;
 
-	if (strstr(url, "youtube.com") != NULL ||
-	    strstr(url, "youtu.be") != NULL ||
-	    strstr(url, "vimeo.com") != NULL ||
-	    strstr(url, "twitch.tv") != NULL ||
-	    strstr(url, "dailymotion.com") != NULL ||
-	    strstr(url, "http://") != NULL ||
-	    strstr(url, "https://") != NULL)
-		return 1;
-
-	return 0;
+	return (g_str_has_prefix(url, "http://") ||
+		g_str_has_prefix(url, "https://"));
 }
 
 static void
@@ -274,6 +272,7 @@ on_stop_clicked(GtkWidget *button, gpointer data)
 		// signal the whole process group, not just the leader
 		kill(-(app->child_pid), SIGTERM);
 		app->child_pid = 0;
+		app->is_streaming = 0;
 		gtk_widget_show(app->download_button);
 		gtk_widget_hide(app->stop_button);
 		gtk_widget_set_sensitive(app->url_entry, TRUE);
@@ -297,12 +296,19 @@ on_child_watch(GPid pid, gint status, gpointer data)
 	app->child_pid = 0;
 
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-		set_status(app, "download completed successfully!");
-		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 1.0);
+		set_status(app, app->is_streaming
+			? "stream ended."
+			: "download completed successfully!");
+		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar),
+			app->is_streaming ? 0.0 : 1.0);
 	} else {
-		set_status(app, "download failed, check URL and try again.");
+		set_status(app, app->is_streaming
+			? "stream failed, check url and try again."
+			: "download failed, check url and try again.");
 		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
 	}
+
+	app->is_streaming = 0;
 
 	gtk_widget_show(app->download_button);
 	gtk_widget_hide(app->stop_button);
@@ -339,7 +345,7 @@ static void
 on_download_clicked(GtkWidget *button, gpointer data)
 {
 	AppState *app = (AppState *)data;
-	const char *url;
+	gchar *url;
 	gchar *browser = NULL;
 	GPid pid;
 	GError *error = NULL;
@@ -349,16 +355,20 @@ on_download_clicked(GtkWidget *button, gpointer data)
 
 	(void)button;
 
-	url = gtk_entry_get_text(GTK_ENTRY(app->url_entry));
+	// strip stray whitespace from pasted urls before building argv
+	url = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->url_entry)));
+	g_strstrip(url);
 
 	if (!validate_url(url)) {
 		show_error(app->window, "please enter a valid video url.");
+		g_free(url);
 		return;
 	}
 
 	format_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->format_combo));
 	if (format_idx < 0 || format_idx >= FMT_COUNT) {
 		show_error(app->window, "please select a format.");
+		g_free(url);
 		return;
 	}
 
@@ -368,13 +378,14 @@ on_download_clicked(GtkWidget *button, gpointer data)
 
 	if (g_mkdir_with_parents(app->download_dir, 0755) != 0) {
 		show_error(app->window, "failed to create download directory.");
+		g_free(url);
 		return;
 	}
 
 	if (format_idx == FMT_MPV) {
 		argv[i++] = "mpv";
 		argv[i++] = "--ytdl-format=bestvideo+bestaudio/best";
-		argv[i++] = (gchar *)url;
+		argv[i++] = url;
 	} else {
 		int browser_idx = gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo));
 		int no_playlist = gtk_toggle_button_get_active(
@@ -403,7 +414,7 @@ on_download_clicked(GtkWidget *button, gpointer data)
 			argv[i++] = browser;
 		}
 
-		argv[i++] = (gchar *)url;
+		argv[i++] = url;
 	}
 	argv[i] = NULL;
 
@@ -429,12 +440,14 @@ on_download_clicked(GtkWidget *button, gpointer data)
 		set_status(app, "ready");
 	} else {
 		app->child_pid = pid;
+		app->is_streaming = (format_idx == FMT_MPV);
 		g_child_watch_add(pid, on_child_watch, app);
 
 		if (app->pulse_timer == 0)
 			app->pulse_timer = g_timeout_add(100, pulse_progress, app);
 	}
 
+	g_free(url);
 	g_free(browser);
 }
 
@@ -585,7 +598,7 @@ set_window_icon(GtkWidget *window)
 	g_list_free_full(icons, g_object_unref);
 }
 
-// kill any running child process before quitting
+// closing the window cancels a running download, except when streaming with mpv
 static void
 on_window_destroy(GtkWidget *widget, gpointer data)
 {
@@ -593,7 +606,7 @@ on_window_destroy(GtkWidget *widget, gpointer data)
 
 	(void)widget;
 
-	if (app->child_pid > 0)
+	if (app->child_pid > 0 && !app->is_streaming)
 		kill(-(app->child_pid), SIGTERM);
 
 	gtk_main_quit();
