@@ -5,6 +5,6 @@
 #define CONFIG_H
 
 #define WINDOW_TITLE "kj-youtube-dl"
-#define DEFAULT_DOWNLOAD_DIR "Downloads"
+#define DEFAULT_DOWNLOAD_DIR "Videos"
 
 #endif

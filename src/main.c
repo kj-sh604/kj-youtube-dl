@@ -153,9 +153,15 @@ static char *load_download_dir(void) {
 
 static char *get_default_download_dir(void) {
   char *saved = load_download_dir();
+  const char *xdg_videos;
 
   if (saved != NULL)
     return saved;
+
+  // xdg standard: honor XDG_VIDEOS_DIR from user-dirs.dirs when set up
+  xdg_videos = g_get_user_special_dir(G_USER_DIRECTORY_VIDEOS);
+  if (xdg_videos != NULL)
+    return g_strdup(xdg_videos);
 
   return g_build_filename(get_home_dir(), DEFAULT_DOWNLOAD_DIR, NULL);
 }
