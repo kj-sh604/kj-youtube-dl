@@ -16,7 +16,18 @@
 
 #include "config.h"
 
-enum { FMT_BEST = 0, FMT_MP4, FMT_WEBM, FMT_M4A, FMT_MPV, FMT_COUNT };
+enum {
+  FMT_BEST = 0,
+  FMT_MP4,
+  FMT_WEBM,
+  FMT_M4A,
+  FMT_MP3,
+  FMT_WAV,
+  FMT_OGG,
+  FMT_OPUS,
+  FMT_MPV,
+  FMT_COUNT
+};
 
 // yt-dlp format strings for each output type
 static const char *format_args[] = {
@@ -24,14 +35,27 @@ static const char *format_args[] = {
     [FMT_MP4] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
     [FMT_WEBM] = "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best",
     [FMT_M4A] = "bestaudio[ext=m4a]",
+    [FMT_MP3] = "bestaudio/best",
+    [FMT_WAV] = "bestaudio/best",
+    [FMT_OGG] = "bestaudio/best",
+    [FMT_OPUS] = "bestaudio/best",
     [FMT_MPV] = NULL};
 
+// --audio-format value for audio extraction entries, NULL means no conversion
+// vorbis is the codec name yt-dlp expects, it writes .ogg files
+static const char *audio_formats[] = {[FMT_MP3] = "mp3",
+                                      [FMT_WAV] = "wav",
+                                      [FMT_OGG] = "vorbis",
+                                      [FMT_OPUS] = "opus",
+                                      [FMT_MPV] = NULL};
+
 // human-readable format names for UI
-static const char *format_names[] = {[FMT_MP4] = "mp4",
-                                     [FMT_WEBM] = "webm",
-                                     [FMT_M4A] = "m4a",
-                                     [FMT_BEST] = "best (auto)",
-                                     [FMT_MPV] = "mpv (stream)"};
+static const char *format_names[] = {
+    [FMT_MP4] = "mp4",         [FMT_WEBM] = "webm",
+    [FMT_M4A] = "m4a",         [FMT_MP3] = "mp3",
+    [FMT_WAV] = "wav",         [FMT_OGG] = "ogg",
+    [FMT_OPUS] = "opus",       [FMT_BEST] = "best (auto)",
+    [FMT_MPV] = "mpv (stream)"};
 
 // application state and UI widget references
 typedef struct {
@@ -52,6 +76,7 @@ typedef struct {
   guint pulse_timer;            // progress pulse timer id, 0 when inactive
   int ytdlp_available;          // yt-dlp availability flag
   int mpv_available;            // mpv availability flag
+  int ffmpeg_available;         // ffmpeg availability flag for audio extraction
 } AppState;
 
 static const char *get_home_dir(void) {
@@ -266,6 +291,11 @@ static void on_child_watch(GPid pid, gint status, gpointer data) {
                                       : "download completed successfully!");
     gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar),
                                   app->is_streaming ? 0.0 : 1.0);
+  } else if (WIFSIGNALED(status)) {
+    // stop button kills return early via the pid guard, this is an outside kill
+    set_status(app, app->is_streaming ? "stream terminated by a signal."
+                                      : "download terminated by a signal.");
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(app->progress_bar), 0.0);
   } else {
     set_status(app, app->is_streaming
                         ? "stream failed, check url and try again."
@@ -305,10 +335,13 @@ static void child_setup(gpointer data) {
 static void on_download_clicked(GtkWidget *button, gpointer data) {
   AppState *app = (AppState *)data;
   gchar *url;
+  gchar *dir;
   gchar *browser = NULL;
   GPid pid;
   GError *error = NULL;
-  gchar *argv[12];
+  // worst case: yt-dlp -c -i -f fmt -x --audio-format fmt --no-playlist
+  // --cookies-from-browser browser url NULL = 13 slots
+  gchar *argv[16];
   int format_idx;
   int i = 0;
 
@@ -331,8 +364,19 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
     return;
   }
 
+  dir = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->dir_entry)));
+  g_strstrip(dir);
+
+  // refuse an empty save-to so the config never records a blank dir
+  if (dir[0] == '\0') {
+    show_error(app->window, "please set a download directory.");
+    g_free(url);
+    g_free(dir);
+    return;
+  }
+
   g_free(app->download_dir);
-  app->download_dir = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->dir_entry)));
+  app->download_dir = dir;
   save_download_dir(app->download_dir);
 
   if (g_mkdir_with_parents(app->download_dir, 0755) != 0) {
@@ -356,6 +400,13 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
     argv[i++] = "-i";
     argv[i++] = "-f";
     argv[i++] = (gchar *)format_args[format_idx];
+
+    // audio extraction entries need -x, the conversion is done by ffmpeg
+    if (audio_formats[format_idx] != NULL) {
+      argv[i++] = "-x";
+      argv[i++] = "--audio-format";
+      argv[i++] = (gchar *)audio_formats[format_idx];
+    }
 
     if (no_playlist)
       argv[i++] = "--no-playlist";
@@ -428,6 +479,9 @@ static void setup_format_combo(AppState *app) {
     else if (i != FMT_MPV && !app->ytdlp_available)
       snprintf(label, sizeof(label), "%s (yt-dlp not installed)",
                format_names[i]);
+    else if (audio_formats[i] != NULL && !app->ffmpeg_available)
+      snprintf(label, sizeof(label), "%s (ffmpeg not installed)",
+               format_names[i]);
     else
       snprintf(label, sizeof(label), "%s", format_names[i]);
 
@@ -484,19 +538,26 @@ static void on_format_changed(GtkWidget *combo, gpointer data) {
     gtk_button_set_label(GTK_BUTTON(app->download_button), "download");
   }
 
+  // --no-playlist only applies to yt-dlp runs, never to mpv streams
+  gtk_widget_set_sensitive(app->no_playlist_check, format_idx != FMT_MPV);
+
   if (format_idx == FMT_MPV && !app->mpv_available) {
     gtk_widget_set_sensitive(app->download_button, FALSE);
     set_status(app, "mpv is not installed");
   } else if (format_idx != FMT_MPV && !app->ytdlp_available) {
     gtk_widget_set_sensitive(app->download_button, FALSE);
     set_status(app, "yt-dlp is not installed");
+  } else if (format_idx >= 0 && audio_formats[format_idx] != NULL &&
+             !app->ffmpeg_available) {
+    gtk_widget_set_sensitive(app->download_button, FALSE);
+    set_status(app, "ffmpeg is not installed");
   } else {
     gtk_widget_set_sensitive(app->download_button, TRUE);
     set_status(app, "ready");
   }
 }
 
-// create app icon: red circle with white play triangle
+// create app icon: teal circle with dark play triangle
 static GdkPixbuf *create_icon_pixbuf(int size) {
   cairo_surface_t *surface;
   cairo_t *cr;
@@ -673,6 +734,7 @@ static void init_app(AppState *app) {
   app->child_pid = 0;
   app->ytdlp_available = binary_exists("yt-dlp");
   app->mpv_available = binary_exists("mpv");
+  app->ffmpeg_available = binary_exists("ffmpeg");
   app->download_dir = get_default_download_dir();
 }
 

@@ -20,7 +20,7 @@ now i'm sad and lazy, so i made a gui that i can just set a keybind to and pop t
 
 ## building
 
-you need `gtk3` and `yt-dlp` installed (`mpv` if you want streaming support)
+you need `gtk3` and `yt-dlp` installed (`mpv` if you want streaming, `ffmpeg` for mp3/wav/ogg/opus extraction)
 
 then just:
 
@@ -29,6 +29,8 @@ make
 ```
 
 the binary will end up in `./kj-youtube-dl`
+
+or `make install` to put it in `~/.local/bin` with the desktop entry and icon (override with `PREFIX=...`), the desktop entry runs `kj-youtube-dl` from your `PATH`
 
 ## using it
 
@@ -51,8 +53,8 @@ i'm not the talent, they are.
 ## what's here
 
 - `src/main.c` - the entire app, probably badly written (i haven't written c since high school)
-- `src/config.h` - compile-time configuration (colors, sizes, etc.), wasn't needed but maybe this will be cool someday
-- `src/config.mk` - build configuration
+- `src/config.h` - compile-time configuration (window title, default download dir)
+- `kj-youtube-dl.svg` - desktop icon
 - `Makefile` - standard suckless-style makefile
 
 ## license
