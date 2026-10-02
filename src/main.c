@@ -63,8 +63,10 @@ typedef struct {
   GtkWidget *url_entry;
   GtkWidget *format_combo;
   GtkWidget *browser_combo;
+  GtkWidget *browser_label; // cookies: row label
   GtkWidget *dir_entry;
   GtkWidget *dir_button;
+  GtkWidget *dir_label; // save-to: row label
   GtkWidget *download_button;
   GtkWidget *stop_button; // cancel running download/stream
   GtkWidget *status_label;
@@ -256,6 +258,14 @@ static int validate_url(const char *url) {
           g_str_has_prefix(url, "https://"));
 }
 
+// cancel the progress pulse timer if it is still running
+static void stop_pulse_timer(AppState *app) {
+  if (app->pulse_timer != 0) {
+    g_source_remove(app->pulse_timer);
+    app->pulse_timer = 0;
+  }
+}
+
 static void on_stop_clicked(GtkWidget *button, gpointer data) {
   AppState *app = (AppState *)data;
 
@@ -266,6 +276,7 @@ static void on_stop_clicked(GtkWidget *button, gpointer data) {
     kill(-(app->child_pid), SIGTERM);
     app->child_pid = 0;
     app->is_streaming = 0;
+    stop_pulse_timer(app);
     gtk_widget_show(app->download_button);
     gtk_widget_hide(app->stop_button);
     gtk_widget_set_sensitive(app->url_entry, TRUE);
@@ -285,6 +296,7 @@ static void on_child_watch(GPid pid, gint status, gpointer data) {
     return;
 
   app->child_pid = 0;
+  stop_pulse_timer(app);
 
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
     set_status(app, app->is_streaming ? "stream ended."
@@ -335,8 +347,9 @@ static void child_setup(gpointer data) {
 static void on_download_clicked(GtkWidget *button, gpointer data) {
   AppState *app = (AppState *)data;
   gchar *url;
-  gchar *dir;
+  gchar *dir = NULL;
   gchar *browser = NULL;
+  const char *cwd = NULL;
   GPid pid;
   GError *error = NULL;
   // worst case: yt-dlp -c -i -f fmt -x --audio-format fmt --no-playlist
@@ -364,25 +377,49 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
     return;
   }
 
-  dir = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->dir_entry)));
-  g_strstrip(dir);
-
-  // refuse an empty save-to so the config never records a blank dir
-  if (dir[0] == '\0') {
-    show_error(app->window, "please set a download directory.");
+  // mirror the combo sensitivity guards so pressing enter on the url
+  // can not bypass a greyed-out format with a missing dependency
+  if (format_idx == FMT_MPV && !app->mpv_available) {
+    set_status(app, "mpv is not installed");
     g_free(url);
-    g_free(dir);
+    return;
+  } else if (format_idx != FMT_MPV && !app->ytdlp_available) {
+    set_status(app, "yt-dlp is not installed");
+    g_free(url);
+    return;
+  } else if (format_idx != FMT_MPV && audio_formats[format_idx] != NULL &&
+             !app->ffmpeg_available) {
+    set_status(app, "ffmpeg is not installed");
+    g_free(url);
     return;
   }
 
-  g_free(app->download_dir);
-  app->download_dir = dir;
-  save_download_dir(app->download_dir);
+  if (format_idx != FMT_MPV) {
+    dir = g_strdup(gtk_entry_get_text(GTK_ENTRY(app->dir_entry)));
+    g_strstrip(dir);
 
-  if (g_mkdir_with_parents(app->download_dir, 0755) != 0) {
-    show_error(app->window, "failed to create download directory.");
-    g_free(url);
-    return;
+    // refuse an empty save-to so the config never records a blank dir
+    if (dir[0] == '\0') {
+      show_error(app->window, "please set a download directory.");
+      g_free(url);
+      g_free(dir);
+      return;
+    }
+
+    g_free(app->download_dir);
+    app->download_dir = dir;
+    save_download_dir(app->download_dir);
+
+    if (g_mkdir_with_parents(app->download_dir, 0755) != 0) {
+      show_error(app->window, "failed to create download directory.");
+      g_free(url);
+      return;
+    }
+
+    cwd = app->download_dir;
+  } else {
+    // streams ignore save-to entirely, spawn mpv from the home dir
+    cwd = get_home_dir();
   }
 
   if (format_idx == FMT_MPV) {
@@ -439,7 +476,7 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
              format_idx == FMT_MPV ? "streaming in mpv..." : "downloading...");
 
   // pass arguments directly, no shell means no injection risk
-  if (!g_spawn_async(app->download_dir, argv, NULL,
+  if (!g_spawn_async(cwd, argv, NULL,
                      G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
                      child_setup, NULL, &pid, &error)) {
 
@@ -541,6 +578,13 @@ static void on_format_changed(GtkWidget *combo, gpointer data) {
   // --no-playlist only applies to yt-dlp runs, never to mpv streams
   gtk_widget_set_sensitive(app->no_playlist_check, format_idx != FMT_MPV);
 
+  // cookies and save-to are download-only, they stay grey while streaming
+  gtk_widget_set_sensitive(app->browser_combo, format_idx != FMT_MPV);
+  gtk_widget_set_sensitive(app->browser_label, format_idx != FMT_MPV);
+  gtk_widget_set_sensitive(app->dir_entry, format_idx != FMT_MPV);
+  gtk_widget_set_sensitive(app->dir_button, format_idx != FMT_MPV);
+  gtk_widget_set_sensitive(app->dir_label, format_idx != FMT_MPV);
+
   if (format_idx == FMT_MPV && !app->mpv_available) {
     gtk_widget_set_sensitive(app->download_button, FALSE);
     set_status(app, "mpv is not installed");
@@ -619,6 +663,8 @@ static void on_window_destroy(GtkWidget *widget, gpointer data) {
 
   (void)widget;
 
+  stop_pulse_timer(app);
+
   if (app->child_pid > 0 && !app->is_streaming)
     kill(-(app->child_pid), SIGTERM);
 
@@ -671,9 +717,9 @@ static void create_ui(AppState *app) {
                    app);
 
   // cookies from browser
-  label = gtk_label_new("cookies:");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(grid), label, 0, 2, 1, 1);
+  app->browser_label = gtk_label_new("cookies:");
+  gtk_widget_set_halign(app->browser_label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(grid), app->browser_label, 0, 2, 1, 1);
 
   app->browser_combo = gtk_combo_box_text_new();
   gtk_widget_set_hexpand(app->browser_combo, TRUE);
@@ -685,9 +731,9 @@ static void create_ui(AppState *app) {
   gtk_grid_attach(GTK_GRID(grid), app->no_playlist_check, 1, 3, 2, 1);
 
   // download directory
-  label = gtk_label_new("save-to:");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(grid), label, 0, 4, 1, 1);
+  app->dir_label = gtk_label_new("save-to:");
+  gtk_widget_set_halign(app->dir_label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(grid), app->dir_label, 0, 4, 1, 1);
 
   app->dir_entry = gtk_entry_new();
   gtk_entry_set_text(GTK_ENTRY(app->dir_entry), app->download_dir);
