@@ -7,7 +7,6 @@
 #include <gtk/gtk.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -63,7 +62,6 @@ typedef struct {
   GtkWidget *url_entry;
   GtkWidget *format_combo;
   GtkWidget *browser_combo;
-  GtkWidget *browser_label; // cookies: row label
   GtkWidget *dir_entry;
   GtkWidget *dir_button;
   GtkWidget *dir_label; // save-to: row label
@@ -723,9 +721,9 @@ static void create_ui(AppState *app) {
                    app);
 
   // cookies from browser
-  app->browser_label = gtk_label_new("cookies:");
-  gtk_widget_set_halign(app->browser_label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(grid), app->browser_label, 0, 2, 1, 1);
+  label = gtk_label_new("cookies:");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(grid), label, 0, 2, 1, 1);
 
   app->browser_combo = gtk_combo_box_text_new();
   gtk_widget_set_hexpand(app->browser_combo, TRUE);
@@ -783,7 +781,6 @@ static void create_ui(AppState *app) {
 
 static void init_app(AppState *app) {
   memset(app, 0, sizeof(*app));
-  app->child_pid = 0;
   app->ytdlp_available = binary_exists("yt-dlp");
   app->mpv_available = binary_exists("mpv");
   app->ffmpeg_available = binary_exists("ffmpeg");
