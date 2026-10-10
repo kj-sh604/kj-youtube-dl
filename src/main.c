@@ -352,9 +352,10 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
   const char *cwd = NULL;
   GPid pid;
   GError *error = NULL;
-  // worst case: yt-dlp -c -i -f fmt -x --audio-format fmt --no-playlist
-  // --cookies-from-browser browser url NULL = 13 slots
+  // worst case download: yt-dlp -c -i -f fmt -x --audio-format fmt
+  // --no-playlist --cookies-from-browser browser url NULL = 13 slots
   gchar *argv[16];
+  char ytdl_raw_buf[128]; // stack buffer for mpv cookie passthrough
   int format_idx;
   int i = 0;
 
@@ -422,13 +423,29 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
     cwd = get_home_dir();
   }
 
+  // cookies apply to both downloads and mpv streams
+  if (gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo)) > 0) {
+    GtkTreeModel *model =
+        gtk_combo_box_get_model(GTK_COMBO_BOX(app->browser_combo));
+    GtkTreeIter iter;
+
+    if (gtk_combo_box_get_active_iter(GTK_COMBO_BOX(app->browser_combo), &iter))
+      gtk_tree_model_get(model, &iter, 0, &browser, -1);
+  }
+
   if (format_idx == FMT_MPV) {
     argv[i++] = "mpv";
     argv[i++] = "--ytdl-format=bestvideo+bestaudio/best";
+
+    // hand the cookie choice to mpv's yt-dlp passthrough
+    if (browser != NULL) {
+      snprintf(ytdl_raw_buf, sizeof(ytdl_raw_buf),
+               "--ytdl-raw-options=cookies-from-browser=%s", browser);
+      argv[i++] = ytdl_raw_buf;
+    }
+
     argv[i++] = url;
   } else {
-    int browser_idx =
-        gtk_combo_box_get_active(GTK_COMBO_BOX(app->browser_combo));
     int no_playlist =
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->no_playlist_check));
 
@@ -447,16 +464,6 @@ static void on_download_clicked(GtkWidget *button, gpointer data) {
 
     if (no_playlist)
       argv[i++] = "--no-playlist";
-
-    if (browser_idx > 0) {
-      GtkTreeModel *model =
-          gtk_combo_box_get_model(GTK_COMBO_BOX(app->browser_combo));
-      GtkTreeIter iter;
-
-      if (gtk_combo_box_get_active_iter(GTK_COMBO_BOX(app->browser_combo),
-                                        &iter))
-        gtk_tree_model_get(model, &iter, 0, &browser, -1);
-    }
 
     if (browser != NULL) {
       argv[i++] = "--cookies-from-browser";
@@ -578,9 +585,8 @@ static void on_format_changed(GtkWidget *combo, gpointer data) {
   // --no-playlist only applies to yt-dlp runs, never to mpv streams
   gtk_widget_set_sensitive(app->no_playlist_check, format_idx != FMT_MPV);
 
-  // cookies and save-to are download-only, they stay grey while streaming
-  gtk_widget_set_sensitive(app->browser_combo, format_idx != FMT_MPV);
-  gtk_widget_set_sensitive(app->browser_label, format_idx != FMT_MPV);
+  // save-to is download-only, it stays grey while streaming
+  // cookies stay enabled, they are passed to mpv's yt-dlp passthrough
   gtk_widget_set_sensitive(app->dir_entry, format_idx != FMT_MPV);
   gtk_widget_set_sensitive(app->dir_button, format_idx != FMT_MPV);
   gtk_widget_set_sensitive(app->dir_label, format_idx != FMT_MPV);
